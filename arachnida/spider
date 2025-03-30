@@ -1,0 +1,159 @@
+#!/usr/bin/python3
+import argparse
+import sys
+import urllib.parse
+import requests
+from typing import Union
+import validators
+from bs4 import BeautifulSoup
+import pathlib
+import hashlib
+
+EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".bmp"]
+
+
+def is_current_site(raw_url: str, target: str):
+    url = urllib.parse.urlparse(raw_url)
+    return url.scheme + "://" + url.netloc == target
+
+
+def clean_recursive_url_list(urls: list[list[str]]):
+    merged = []
+    for url_list in urls:
+        merged.extend(url_list)
+    return list(set(merged))
+
+
+def is_correct_img_type(img_link: str):
+    return any([img_link.endswith(ext) for ext in EXTENSIONS])
+
+
+class Extractor:
+    def __init__(self, html: str, crawler_opts: "CrawlerOptions") -> None:
+        self.soup = BeautifulSoup(html, "html.parser")
+        url = urllib.parse.urlparse(crawler_opts.url)
+        self.source = url.scheme + "://" + url.netloc
+
+    def links(self):
+        l = self.soup.find_all("a")
+        hrefs = list(map(lambda a: a.attrs.get("href"), l))
+        hrefs = list(filter(lambda ref: ref is not None, hrefs))
+        hrefs = [self.source + ref for ref in hrefs]
+        return [ref for ref in hrefs if is_current_site(ref, self.source)]
+
+    def imgs_url(self):
+        imgs = self.soup.find_all("img")
+        srcs = list(map(lambda a: a.attrs.get("src"), imgs))
+        srcs = list(filter(lambda src: src is not None, srcs))
+        srcs = [self.source + src for src in srcs]
+        return [
+            src
+            for src in srcs
+            if is_current_site(src, self.source) and is_correct_img_type(src)
+        ]
+
+
+class CrawlerOptions:
+    recursive: bool
+    level: int
+    save_path: str
+    url: str
+
+    def __init__(self, options: dict[str, Union[str, bool, int]]):
+        self.recursive = options["recursive"]
+        if self.recursive:
+            self.level = options["level"]
+        else:
+            self.level = 1
+        self.save_path = pathlib.Path(options["path"])
+        url = options["URL"]
+        if not validators.url(url):
+            raise RuntimeError("Invalid URL")
+        self.url = url
+
+
+class Crawler:
+    def __init__(self, options: CrawlerOptions) -> None:
+        self.options = options
+        self.target_urls = list()
+        self.img_srcs = list()
+
+    def prepare_links(self):
+        print(
+            f"[*] Retrieving URLs with recursive depth of {self.options.level}"
+        )
+        recursive_urls: list[list[str]] = [[self.options.url]]
+        for i in range(0, self.options.level - 1):
+            for url in recursive_urls[i - 1]:
+                if url is None:
+                    continue
+                r = requests.get(url)
+                extr = Extractor(r.content.decode("utf-8"), self.options)
+                recursive_urls.append(extr.links())
+        self.target_urls = clean_recursive_url_list(recursive_urls)
+
+    def retrieve_images_link(self):
+        print(f"[*] Retrieving image sources")
+        temp = []
+        for target in self.target_urls:
+            r = requests.get(target)
+            extr = Extractor(r.content.decode("utf-8"), self.options)
+            temp.extend(extr.imgs_url())
+        self.img_srcs = list(set(temp))
+
+    def prepare_save_loc(self):
+        print("[+] Preparing save folder")
+        path = self.options.save_path
+        if path.exists():
+            if not path.is_dir():
+                raise RuntimeError(f"'{path.absolute()}' is not a folder.")
+        else:
+            path.mkdir()
+
+    def download_images(self):
+        print("[*] Downloading images")
+        for url in self.img_srcs:
+            r = requests.get(url)
+            savename = ".".join(
+                [hashlib.sha256(r.content).hexdigest(), url.split(".")[-1]]
+            )
+            savepath = self.options.save_path / pathlib.Path(savename)
+            with open(savepath, "wb") as img:
+                img.write(r.content)
+            print(f"[+] {savename} saved")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        prog="spider", description="A crawler and image scraper."
+    )
+    parser.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Recursively scrape images",
+    )
+    parser.add_argument(
+        "-l",
+        "--level",
+        default=5,
+        type=int,
+        help="Depth level for recursive scraping",
+    )
+    parser.add_argument(
+        "-p",
+        "--path",
+        default="./data",
+        type=str,
+        help="Destination folder for the images",
+    )
+    parser.add_argument("URL", help="URL to crawl")
+    return vars(parser.parse_args(sys.argv[1:]))
+
+
+opts = CrawlerOptions(parse_args())
+crawler = Crawler(opts)
+crawler.prepare_save_loc()
+crawler.prepare_links()
+crawler.retrieve_images_link()
+crawler.download_images()
