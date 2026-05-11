@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+from binascii import hexlify
 from math import floor
+import subprocess
 import time
 from typing import Literal
 import keyring
@@ -14,10 +16,18 @@ import secrets
 import logging
 import pathlib
 
-ArgsType = dict[Literal["generate_key", "use_key"], str | None]
+import qrcode
+
+ArgsType = dict[Literal["generate_key", "use_key", "export"], str | None]
 
 l = logging.getLogger("main")
 base_dir = pathlib.Path(__file__).parent
+
+
+class Constants:
+    TTL = 30
+    DIGITS = 6
+    ALGO = SHA1
 
 
 class App:
@@ -81,8 +91,28 @@ class App:
             fkey = base64.urlsafe_b64encode(bytes.fromhex(creds.password))
             f = Fernet(fkey)
             key = f.decrypt(kf.read())
-        hotp = HOTP(key, 6, SHA1())
-        print(hotp.generate(floor(floor(time.time()) / 60)).decode())
+        hotp = HOTP(key, Constants.DIGITS, Constants.ALGO())
+        print(
+            hotp.generate(floor(floor(time.time()) / Constants.TTL)).decode()
+        )
+
+    @staticmethod
+    def export_key(file_path: str, creds: Credential):
+        keyfile = pathlib.Path(file_path)
+        if not keyfile.exists():
+            raise FileNotFoundError(f"{file_path} does not exists")
+        if not keyfile.is_file():
+            raise FileExistsError(f"{file_path} exists, but is not a file")
+        key: bytes
+        with open(keyfile, "rb") as kf:
+            fkey = base64.urlsafe_b64encode(bytes.fromhex(creds.password))
+            f = Fernet(fkey)
+            key = hexlify(f.decrypt(kf.read()))
+        link = f"otpauth://totp/ft_otp?secret={key.decode()}&issuer=ft_otp"
+        qr = qrcode.QRCode()
+        qr.add_data(link)
+        qr.make()
+        qr.make_image().get_image().show()
 
     @staticmethod
     def run(args: ArgsType):
@@ -97,17 +127,29 @@ class App:
                 exit(1)
         if args["generate_key"] is not None:
             App.generate_key(args["generate_key"], kr_cred)
-        else:
-            assert args["use_key"] is not None, "use_key option not provided"
+        elif args["use_key"] is not None:
             App.use_key(args["use_key"], kr_cred)
+        elif args["export"] is not None:
+            App.export_key(args["export"], kr_cred)
+        else:
+            subprocess.Popen(
+                ["/usr/bin/env", "python3", f"{base_dir / "ft_otp_gui"}"],
+                executable="/usr/bin/env",
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+            exit(0)
 
 
 def parse_args() -> ArgsType:
     parser = argparse.ArgumentParser(
         prog="ft_otp",
         description="TOTP generator",
+        epilog="Running ft_otp without any argument will start the GUI.",
     )
-    opts = parser.add_mutually_exclusive_group(required=True)
+    opts = parser.add_mutually_exclusive_group()
     opts.add_argument(
         "-g",
         "--generate-key",
@@ -124,8 +166,18 @@ def parse_args() -> ArgsType:
         "a key generated using the '-g' option.",
         metavar="key_file",
     )
+    opts.add_argument(
+        "-e",
+        "--export",
+        help="Export a key using a QR Code",
+        metavar="key_file",
+    )
     v = vars(parser.parse_args())
-    return {"generate_key": v["generate_key"], "use_key": v["use_key"]}
+    return {
+        "generate_key": v["generate_key"],
+        "use_key": v["use_key"],
+        "export": v["export"],
+    }
 
 
 if __name__ == "__main__":

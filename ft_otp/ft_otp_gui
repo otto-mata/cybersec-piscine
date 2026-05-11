@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+import logging
+import pathlib
+from PySide6.QtWidgets import QApplication, QMainWindow
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("ft_otp")
+
+
+l = logging.getLogger("main")
+base_dir = pathlib.Path(__file__).parent
+
+
+class App:
+    @staticmethod
+    def run():
+        app = QApplication([])
+        window = MainWindow()
+        window.show()
+
+        app.exec()
+        exit(0)
+
+
+if __name__ == "__main__":
+    App.run()
