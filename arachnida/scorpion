@@ -1,7 +1,4 @@
-#!/usr/bin/python3
-from math import floor, sqrt
-import json
-from pprint import pprint
+#!/usr/bin/env python
 import sys
 import io
 from infos import TAGS_DESCRIPTIONS, TAG_NAMES
@@ -60,7 +57,7 @@ def extract(file: str):
     while last_offset != current_offset:
         last_offset = entries.get("ExifOffset")
         ifd_dir_entry_no = int.from_bytes(data.read(2), endianness)
-        for i in range(ifd_dir_entry_no):
+        for _ in range(ifd_dir_entry_no):
             entry = data.read(12)
             tag = int.from_bytes(entry[:2], endianness)
             tag_name = tag_to_name(tag)
@@ -76,7 +73,7 @@ def extract(file: str):
                 data_value = data.read(data_size)
                 data.seek(rewind, 0)
             if fmt == 2 or tag in TREATED_AS_STRINGS:
-                encoding = "utf-8"
+                encoding = "utf-16"
                 data_value = (
                     data_value.decode(encoding=encoding)
                     .replace("\u0000", "")
@@ -89,7 +86,9 @@ def extract(file: str):
             elif fmt < 11:
                 data_value = int.from_bytes(data_value, endianness)
             else:
-                data_value = int.from_bytes(data_value, endianness)  #! CHANGEME
+                data_value = int.from_bytes(
+                    data_value, endianness
+                )  #! CHANGEME
             entries[tag_name] = data_value
         current_offset = entries.get("ExifOffset")
         if last_offset != current_offset:

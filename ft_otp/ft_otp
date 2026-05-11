@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+import argparse
+import base64
+from math import floor
+import time
+from typing import Literal
+import keyring
+from keyring.credentials import Credential
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.twofactor.hotp import HOTP
+from cryptography.hazmat.primitives.hashes import SHA1
+import os
+import secrets
+import logging
+import pathlib
+
+ArgsType = dict[Literal["generate_key", "use_key"], str | None]
+
+l = logging.getLogger("main")
+base_dir = pathlib.Path(__file__).parent
+
+
+class App:
+    @staticmethod
+    def kr_get_cred():
+        return keyring.get_credential(
+            "ft_otp",
+            f"{os.getuid()}",
+        )
+
+    @staticmethod
+    def kr_install():
+        installation_password = secrets.token_hex(32)
+        keyring.set_password(
+            "ft_otp",
+            f"{os.getuid()}",
+            installation_password,
+        )
+        return App.kr_get_cred()
+
+    @staticmethod
+    def generate_key(file_path: str, creds: Credential):
+        kf_plain = pathlib.Path(file_path)
+        if not kf_plain.exists():
+            raise FileNotFoundError(f"{file_path} does not exists")
+        if not kf_plain.is_file():
+            raise FileExistsError(f"{file_path} exists, but is not a file")
+        key: bytes
+        with open(kf_plain) as f:
+            key_hex = f.read()
+            if len(key_hex) < 64:
+                raise ValueError(
+                    "Password must be at least 32 bytes "
+                    "long (64 hexadecimal characters)"
+                )
+            key = bytes.fromhex(key_hex)
+
+        keyfile = base_dir / "ft_otp.key"
+        if keyfile.exists():
+            l.warning(
+                f"{keyfile} already exists and will be overwritten. Proceed ? [y/N]"
+            )
+            if l.getEffectiveLevel() <= logging.WARNING:
+                proceed = input()
+                if not proceed.lower() == "y":
+                    raise RuntimeError("Key file already present")
+        with open(keyfile, "wb") as kf:
+            fkey = base64.urlsafe_b64encode(bytes.fromhex(creds.password))
+            f = Fernet(fkey)
+            kf.write(f.encrypt(key))
+
+    @staticmethod
+    def use_key(file_path: str, creds: Credential):
+        keyfile = pathlib.Path(file_path)
+        if not keyfile.exists():
+            raise FileNotFoundError(f"{file_path} does not exists")
+        if not keyfile.is_file():
+            raise FileExistsError(f"{file_path} exists, but is not a file")
+        key: bytes
+        with open(keyfile, "rb") as kf:
+            fkey = base64.urlsafe_b64encode(bytes.fromhex(creds.password))
+            f = Fernet(fkey)
+            key = f.decrypt(kf.read())
+        hotp = HOTP(key, 6, SHA1())
+        print(hotp.generate(floor(floor(time.time()) / 60)).decode())
+
+    @staticmethod
+    def run(args: ArgsType):
+        kr_cred = App.kr_get_cred()
+        if kr_cred is None:
+            kr_cred = App.kr_install()
+            if kr_cred is None:
+                l.critical(
+                    "Could not install application "
+                    "credentials in the system keyring."
+                )
+                exit(1)
+        if args["generate_key"] is not None:
+            App.generate_key(args["generate_key"], kr_cred)
+        else:
+            assert args["use_key"] is not None, "use_key option not provided"
+            App.use_key(args["use_key"], kr_cred)
+
+
+def parse_args() -> ArgsType:
+    parser = argparse.ArgumentParser(
+        prog="ft_otp",
+        description="TOTP generator",
+    )
+    opts = parser.add_mutually_exclusive_group(required=True)
+    opts.add_argument(
+        "-g",
+        "--generate-key",
+        help="Generate a key to use with this program. "
+        "The key has to be stored in a separate file, "
+        "be at least 64 characters long and hexadecimal.",
+        metavar="plain_key_file",
+    )
+    opts.add_argument(
+        "-k",
+        "--use-key",
+        help="Generate a time-based one-time password (TOTP) "
+        "using the provided file containing "
+        "a key generated using the '-g' option.",
+        metavar="key_file",
+    )
+    v = vars(parser.parse_args())
+    return {"generate_key": v["generate_key"], "use_key": v["use_key"]}
+
+
+if __name__ == "__main__":
+    App.run(parse_args())
